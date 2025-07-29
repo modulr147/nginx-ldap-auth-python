@@ -1,2 +1,17 @@
 # nginx-ldap-auth-python
-Python service for nginx to facilitate authenication via LDAP
+
+A lightweight Python service to enable **LDAP authentication** behind **nginx**, useful for securing dashboards such as **Prometheus**, **Alertmanager**, and others that lack native auth support.
+
+This script is inspired by [nginxinc/nginx-ldap-auth](https://github.com/nginxinc/nginx-ldap-auth) project.
+
+---
+
+## Features
+
+- Connects to one or more LDAP servers (e.g., FreeIPA)
+- Authenticates users using LDAP credentials
+- Validates group membership before access is granted
+- Works seamlessly with nginx's `auth_request` module
+- No need to configure a BIND user
+
+---
