@@ -1,16 +1,26 @@
-from flask import Flask, request, Response
+from flask import Flask, request, Response, g
 from ldap3 import Server, Connection, ALL, SUBTREE
 from cachetools import TTLCache
 import base64
 import os
+import logging
 
 app = Flask(__name__)
 
-LDAP_SERVERS = os.environ.get('LDAP_SERVERS').split(',')
-BASE_DN = os.environ.get('BASE_DN')
-GROUP_DN = os.environ.get('GROUP_DN')
+LDAP_SERVERS = os.environ.get('LDAP_SERVERS', 'ldap://idm.example.com').split(',')
+BASE_DN = os.environ.get('BASE_DN', 'cn=users,cn=accounts,dc=example,dc=com')
+GROUP_DN = os.environ.get('GROUP_DN', 'cn=monitoring,cn=groups,cn=accounts,cn=accounts,dc=example,dc=com')
 
-auth_cache = TTLCache(maxsize=1000, ttl=6000)
+# cahe credentials for 1 hour
+auth_cache = TTLCache(maxsize=10000, ttl=3600)
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s [%(name)s] %(message)s',
+)
+
+logger = logging.getLogger("ldap-auth")
 
 def cache_key(username, password):
     return f"{username}:{password}"
@@ -19,7 +29,7 @@ def find_user_dn(server_url, username):
     server = Server(server_url, get_info=ALL)
     conn = Connection(server)
     if not conn.bind():
-        print(f"[{server_url}] Anonymous bind failed")
+        logger.warning(f"[{server_url}] Anonymous bind failed")
         return None, None
 
     search_filter = f'(uid={username})'
@@ -47,61 +57,67 @@ def is_user_in_group(conn, user_dn):
 def auth():
     auth_header = request.headers.get('Authorization', '')
     if not auth_header.startswith('Basic '):
+        logger.info(f"Missing Authorization header")
         return Response(
             'Missing credentials',
             status=401,
-            headers={'WWW-Authenticate': 'Basic realm="Prometheus Login"'}
+            headers={'WWW-Authenticate': 'Basic realm="LDAP Login"'}
         )
 
     try:
         credentials = base64.b64decode(auth_header.split(' ')[1]).decode('utf-8')
         username, password = credentials.split(':', 1)
     except Exception as e:
-        print(f"Invalid Authorization header: {e}")
+        logger.warning(f"Invalid Authorization header: {e}")
         return Response(
             'Invalid credentials',
             status=401,
-            headers={'WWW-Authenticate': 'Basic realm="Prometheus Login"'}
+            headers={'WWW-Authenticate': 'Basic realm="LDAP Login"'}
         )
 
     key = cache_key(username, password)
     if key in auth_cache:
-        print(f"[CACHE HIT] Auth for {username}")
+        logger.info(f"[LDAP CACHE HIT] Auth success for user: {username}")
         return Response('Authenticated', status=200)
 
     for ldap_url in LDAP_SERVERS:
-        print(f"Trying LDAP server: {ldap_url}")
+        logger.info(f"Trying LDAP server: {ldap_url}")
         server, user_dn = find_user_dn(ldap_url, username)
         if not user_dn:
+            logger.info(f"User {username} not found on {ldap_url}")
             continue
 
         try:
             conn = Connection(server, user=user_dn, password=password, auto_bind=True)
-            print(f"Authenticated via {ldap_url} as {user_dn}")
+            logger.info(f"Authenticated via {ldap_url} as {user_dn.split(',')[0].split('=')[1]}")
 
             if is_user_in_group(conn, user_dn):
                 auth_cache[key] = user_dn
                 conn.unbind()
+                logger.info(f"User {user_dn.split(',')[0].split('=')[1]} authorized (in group {GROUP_DN.split(',')[0].split('=')[1]})")
                 return Response('Authenticated', status=200)
             else:
-                print(f"User {user_dn} not in group {GROUP_DN}")
+                logger.warning(f"User {user_dn.split(',')[0].split('=')[1]} not in expected group. Expected group is {GROUP_DN.split(',')[0].split('=')[1]}.")
                 conn.unbind()
                 return Response(
                     'Forbidden',
                     status=403,
-                    headers={'WWW-Authenticate': 'Basic realm="Prometheus Login"'}
+                    headers={'WWW-Authenticate': 'Basic realm="LDAP Login"'}
                 )
 
         except Exception as e:
-            print(f"Bind failed on {ldap_url} for {user_dn}: {e}")
+            logger.warning(f"Bind failed on {ldap_url} for {user_dn.split(',')[0].split('=')[1]}: {e}")
             continue
 
+        logger.info(f"Unauthorized access attempt for user {username}")
     return Response(
         'Unauthorized',
         status=401,
-        headers={'WWW-Authenticate': 'Basic realm="Prometheus Login"'}
+        headers={'WWW-Authenticate': 'Basic realm="LDAP Login"'}
     )
 
 if __name__ == '__main__':
     port = int(os.getenv("PORT", 9000))
-    app.run(host='0.0.0.0', port=port)
+    host = os.getenv("HOST_IP", "0.0.0.0")
+    logger.info(f"Starting LDAP auth server on {host}:{port}")
+    app.run(host=host, port=port)
