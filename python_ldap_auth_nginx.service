@@ -1,0 +1,16 @@
+[Unit]
+Description=LDAP-Auth service for nginx
+After=network.target
+
+[Service]
+User=nobody
+Environment=GROUP_DN="cn=test-group,cn=groups,cn=accounts,dc=test,dc=com"
+Environment=BASE_DN="cn=users,cn=accounts,dc=test,dc=com"
+Environment=LDAP_SERVERS="ldap://ldap1.test.com:389,ldap://ldap2.test.com:389"
+Environment=HOST_IP="127.0.0.1"
+Environment=PORT="9000"
+ExecStart=/usr/bin/nginx_ldap_auth_python
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
